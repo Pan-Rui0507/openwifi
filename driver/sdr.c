@@ -58,6 +58,7 @@
 #include "hw_def.h"
 #include "sdr.h"
 #include "git_rev.h"
+#include "expected_hw_git_rev.h"
 
 #ifndef RFSoC4x2
 extern int ad9361_do_calib_run(struct ad9361_rf_phy *phy, u32 cal, int arg);
@@ -68,6 +69,8 @@ extern int ad9361_ctrl_outs_setup(struct ad9361_rf_phy *phy, struct ctrl_outs_co
 extern int ad9361_set_tx_atten(struct ad9361_rf_phy *phy, u32 atten_mdb, bool tx1, bool tx2, bool immed);
 extern int ad9361_spi_read(struct spi_device *spi, u32 reg);
 extern int ad9361_get_tx_atten(struct ad9361_rf_phy *phy, u32 tx_num);
+extern int ad9361_update_rf_bandwidth(struct ad9361_rf_phy *phy,
+                                     u32 rf_rx_bw, u32 rf_tx_bw);
 #else
 int ad9361_do_calib_run(struct ad9361_rf_phy *phy, u32 cal, int arg){return(0);};
 int cf_axi_dds_datasel(struct cf_axi_dds_state *st, int channel, enum dds_data_select sel){return(0);};
@@ -113,6 +116,11 @@ static bool AGGR_ENABLE = false;
 static bool TX_OFFSET_TUNING_ENABLE = false;
 
 static int init_tx_att = 0;
+static int phy_profile = OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE;
+static uint rf_center_freq_mhz = OPENWIFI_PHY_ACTUAL_FREQ_MHZ;
+static uint send_ack_wait_100ns;
+static uint ack_signal_timeout_100ns;
+static uint ack_fcs_timeout_100ns;
 
 MODULE_AUTHOR("Xianjun Jiao");
 MODULE_DESCRIPTION("SDR driver");
@@ -123,6 +131,95 @@ MODULE_PARM_DESC(myint, "test_mode. bit0: aggregation enable(1)/disable(0)");
 
 module_param(init_tx_att, int, 0);
 MODULE_PARM_DESC(myint, "init_tx_att. TX attenuation in dB*1000  example: set to 3000 for 3dB attenuation");
+
+module_param(phy_profile, int, 0444);
+MODULE_PARM_DESC(phy_profile, "PHY profile; this branch accepts only 1 (narrow2_s1g_like)");
+module_param(rf_center_freq_mhz, uint, 0444);
+MODULE_PARM_DESC(rf_center_freq_mhz, "Actual RF center in MHz; allowed 756..786, default 780");
+module_param(send_ack_wait_100ns, uint, 0444);
+MODULE_PARM_DESC(send_ack_wait_100ns, "Measured ACK launch wait in 0.1 us units; required");
+module_param(ack_signal_timeout_100ns, uint, 0444);
+MODULE_PARM_DESC(ack_signal_timeout_100ns, "ACK SIGNAL deadline from TX end in 0.1 us units; required");
+module_param(ack_fcs_timeout_100ns, uint, 0444);
+MODULE_PARM_DESC(ack_fcs_timeout_100ns, "ACK FCS deadline from TX end in 0.1 us units; required");
+
+static int openwifi_apply_phy_contract(struct openwifi_priv *priv)
+{
+  u32 profile_cfg;
+  u32 timing1;
+  u32 fcs_margin_100ns;
+  const u32 ack_fcs_nominal_100ns =
+      (OPENWIFI_PHY_SIFS_US + OPENWIFI_PHY_ACK_PPDU_US) * 10;
+  const u32 ack_signal_nominal_100ns =
+      (OPENWIFI_PHY_SIFS_US + OPENWIFI_PHY_PREAMBLE_SIG_US) * 10;
+
+  if (phy_profile != OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE) {
+    pr_err("%s refusing unsupported PHY profile %d; no legacy fallback\n",
+           sdr_compatible_str, phy_profile);
+    return -EPROTO;
+  }
+  if (rf_center_freq_mhz < 756 || rf_center_freq_mhz > 786) {
+    pr_err("%s RF center %uMHz outside allowed design range 756..786MHz\n",
+           sdr_compatible_str, rf_center_freq_mhz);
+    return -ERANGE;
+  }
+
+  priv->phy_abi = xpu_api->XPU_REG_PHY_ABI_read();
+  priv->hardware_git_rev = xpu_api->XPU_REG_FPGA_GIT_REV_read();
+  if (priv->phy_abi != OPENWIFI_PHY_ABI_NARROW2) {
+    pr_err("%s PHY ABI mismatch hardware=%08x expected=%08x\n",
+           sdr_compatible_str, priv->phy_abi, OPENWIFI_PHY_ABI_NARROW2);
+    return -EPROTO;
+  }
+  if (!OPENWIFI_EXPECTED_HW_GIT_REV ||
+      priv->hardware_git_rev != OPENWIFI_EXPECTED_HW_GIT_REV) {
+    pr_err("%s hardware revision mismatch hardware=%08x expected=%08x\n",
+           sdr_compatible_str, priv->hardware_git_rev,
+           OPENWIFI_EXPECTED_HW_GIT_REV);
+    return -EPROTO;
+  }
+  if (!send_ack_wait_100ns ||
+      ack_signal_timeout_100ns < ack_signal_nominal_100ns ||
+      ack_fcs_timeout_100ns < ack_fcs_nominal_100ns ||
+      send_ack_wait_100ns > 0x7fff || ack_signal_timeout_100ns > 0x7fff) {
+    pr_err("%s narrow2 calibration missing/invalid: send_ack=%u signal_timeout=%u fcs_timeout=%u (0.1us)\n",
+           sdr_compatible_str, send_ack_wait_100ns,
+           ack_signal_timeout_100ns, ack_fcs_timeout_100ns);
+    return -EINVAL;
+  }
+
+  fcs_margin_100ns = ack_fcs_timeout_100ns - ack_fcs_nominal_100ns;
+  if (fcs_margin_100ns > 0x7fff)
+    return -ERANGE;
+
+  profile_cfg = OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE | BIT(8) | BIT(9);
+  timing1 = OPENWIFI_PHY_TIMING1 | BIT(30);
+
+  /* Program timing before selecting profile so there is no partial profile. */
+  xpu_api->XPU_REG_PHY_TIMING0_write(OPENWIFI_PHY_TIMING0);
+  xpu_api->XPU_REG_PHY_TIMING1_write(timing1);
+  xpu_api->XPU_REG_SEND_ACK_WAIT_TOP_write(
+      (send_ack_wait_100ns << 16) | send_ack_wait_100ns);
+  xpu_api->XPU_REG_RECV_ACK_COUNT_TOP0_write(
+      BIT(31) | (ack_signal_timeout_100ns << 16) | fcs_margin_100ns);
+  xpu_api->XPU_REG_RECV_ACK_COUNT_TOP1_write(
+      BIT(31) | (ack_signal_timeout_100ns << 16) | fcs_margin_100ns);
+  xpu_api->XPU_REG_PHY_PROFILE_CFG_write(profile_cfg);
+
+  if (xpu_api->XPU_REG_PHY_PROFILE_CFG_read() != profile_cfg ||
+      xpu_api->XPU_REG_PHY_TIMING0_read() != OPENWIFI_PHY_TIMING0 ||
+      xpu_api->XPU_REG_PHY_TIMING1_read() != timing1) {
+    pr_err("%s PHY profile readback mismatch; carrier remains disabled\n",
+           sdr_compatible_str);
+    xpu_api->XPU_REG_PHY_PROFILE_CFG_write(0);
+    return -EIO;
+  }
+
+  priv->send_ack_wait_100ns = send_ack_wait_100ns;
+  priv->ack_signal_timeout_100ns = ack_signal_timeout_100ns;
+  priv->ack_fcs_timeout_100ns = ack_fcs_timeout_100ns;
+  return 0;
+}
 
 // ---------------rfkill---------------------------------------
 static bool openwifi_is_radio_enabled(struct openwifi_priv *priv)
@@ -270,7 +367,9 @@ static void ad9361_rf_set_channel(struct ieee80211_hw *dev,
   u32 diff_tx_lo;
   bool change_flag;
 
-  actual_rx_lo = conf->chandef.chan->center_freq - priv->rx_freq_offset_to_lo_MHz;
+  actual_rx_lo = (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE) ?
+                 priv->rf_center_freq_mhz :
+                 conf->chandef.chan->center_freq - priv->rx_freq_offset_to_lo_MHz;
   change_flag = (actual_rx_lo != priv->actual_rx_lo);
 
   printk("%s ad9361_rf_set_channel target %dMHz rx offset %dMHz current %dMHz change flag %d\n", sdr_compatible_str,
@@ -278,7 +377,9 @@ static void ad9361_rf_set_channel(struct ieee80211_hw *dev,
 
   // if (change_flag && priv->rf_reg_val[RF_TX_REG_IDX_FREQ_MHZ]==0 && priv->rf_reg_val[RF_RX_REG_IDX_FREQ_MHZ]==0) {
   if (change_flag) {
-    actual_tx_lo = conf->chandef.chan->center_freq - priv->tx_freq_offset_to_lo_MHz;
+    actual_tx_lo = (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE) ?
+                   priv->rf_center_freq_mhz :
+                   conf->chandef.chan->center_freq - priv->tx_freq_offset_to_lo_MHz;
     diff_tx_lo = priv->last_tx_quad_cal_lo > actual_tx_lo ? priv->last_tx_quad_cal_lo - actual_tx_lo : actual_tx_lo - priv->last_tx_quad_cal_lo;
 
     printk("%s ad9361_rf_set_channel target %dMHz tx offset %dMHz current %dMHz diff_tx_lo %dMHz\n", sdr_compatible_str,
@@ -519,7 +620,8 @@ static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
     // dma_driver_buf_idx_mod = (state.residue&0x7f);
     fcs_ok = ((fcs_ok&0x80)!=0);
 
-    if ( (len>=14 && (!len_overflow)) && (rate_idx>=8 && rate_idx<=23)) {
+    if ( (len>=14 && (!len_overflow)) && (rate_idx>=8 && rate_idx<=23) &&
+         (priv->phy_profile_id != OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE || rate_idx == 11)) {
       // if ( phy_rx_sn_hw!=dma_driver_buf_idx_mod) {
       //   printk("%s openwifi_rx: WARNING sn %d next buf_idx %d!\n", sdr_compatible_str,phy_rx_sn_hw,dma_driver_buf_idx_mod);
       // }
@@ -572,7 +674,8 @@ static irqreturn_t openwifi_rx_interrupt(int irq, void *dev_id)
 
         rx_status.antenna = priv->runtime_rx_ant_cfg;
         // def in ieee80211_rate openwifi_rates 0~11. 0~3 11b(1M~11M), 4~11 11a/g(6M~54M)
-        rx_status.rate_idx = wifi_rate_table_mapping[rate_idx];
+        rx_status.rate_idx = (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE) ?
+                             0 : wifi_rate_table_mapping[rate_idx];
         rx_status.signal = signal;
 
         rx_status.freq = dev->conf.chandef.chan->center_freq;
@@ -1134,6 +1237,14 @@ static void openwifi_tx(struct ieee80211_hw *dev,
 
   // get Linux rate (MCS) setting
   rate_hw_value = ieee80211_get_tx_rate(dev, info)->hw_value;
+  if (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE) {
+    rate_hw_value = 4; /* logical legacy 6 Mbps -> physical ~0.6 Mbps */
+    use_ht_rate = false;
+    use_short_gi = false;
+    use_ht_aggr = false;
+    use_rts_cts = false;
+    use_cts_protect = false;
+  }
   // drv_tx_reg_val[DRV_TX_REG_IDX_RATE]
   // override rate legacy: 4:6M,   5:9M,  6:12M,  7:18M, 8:24M, 9:36M, 10:48M,   11:54M
   // drv_tx_reg_val[DRV_TX_REG_IDX_RATE_HT]
@@ -1165,6 +1276,11 @@ static void openwifi_tx(struct ieee80211_hw *dev,
     hdr->duration_id = gen_ht_duration_id(frame_control, aid, qos_hdr, use_ht_aggr, rate_hw_value, sifs); //linux only do it for 11a/g, not for 11n and later
   }
   duration_id = hdr->duration_id;
+  if (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE &&
+      pkt_need_ack && ieee80211_is_data(frame_control)) {
+    hdr->duration_id = cpu_to_le16(OPENWIFI_PHY_ACK_DURATION_US);
+    duration_id = hdr->duration_id;
+  }
 
   if (use_rts_cts)
     printk("%s openwifi_tx: WARNING sn %d use_rts_cts is not supported!\n", sdr_compatible_str, ring->bd_wr_idx);
@@ -1599,6 +1715,14 @@ static int openwifi_start(struct ieee80211_hw *dev)
     priv->vif[i] = NULL;
   }
 
+  /* xpu hw_init clears profile registers; restore and verify before RF on. */
+  ret = xpu_api->hw_init(priv->xpu_cfg);
+  if (ret)
+    return ret;
+  ret = openwifi_apply_phy_contract(priv);
+  if (ret)
+    return ret;
+
   // //keep software registers persistent between NIC down and up for multiple times
   /*memset(priv->drv_tx_reg_val, 0, sizeof(priv->drv_tx_reg_val));
   memset(priv->drv_rx_reg_val, 0, sizeof(priv->drv_rx_reg_val));
@@ -1620,8 +1744,6 @@ static int openwifi_start(struct ieee80211_hw *dev)
   tx_intf_api->hw_init(priv->tx_intf_cfg,8,8,priv->fpga_type);
   openofdm_tx_api->hw_init(priv->openofdm_tx_cfg);
   openofdm_rx_api->hw_init(priv->openofdm_rx_cfg);
-  xpu_api->hw_init(priv->xpu_cfg);
-
   xpu_api->XPU_REG_MAC_ADDR_write(priv->mac_addr);
 
   printk("%s openwifi_start: rx_intf_cfg %d openofdm_rx_cfg %d tx_intf_cfg %d openofdm_tx_cfg %d\n",sdr_compatible_str, priv->rx_intf_cfg, priv->openofdm_rx_cfg, priv->tx_intf_cfg, priv->openofdm_tx_cfg);
@@ -2262,6 +2384,7 @@ static int openwifi_dev_probe(struct platform_device *pdev)
 
   priv->actual_rx_lo = 1000; //Some value aligned with rf_init/rf_init_11n.sh that is not WiFi channel to force ad9361_rf_set_channel execution triggered by Linux
   priv->actual_tx_lo = 1000; //Some value aligned with rf_init/rf_init_11n.sh that is not WiFi channel to force ad9361_rf_set_channel execution triggered by Linux
+  priv->phy_profile_id = phy_profile;
   priv->band = freq_MHz_to_band(priv->actual_rx_lo);
   priv->use_short_slot = false; //this can be changed by openwifi_bss_info_changed: BSS_CHANGED_ERP_SLOT
   priv->ampdu_reference = 0;
@@ -2341,6 +2464,8 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   // //-----------------------------parse the test_mode input--------------------------------
   if (test_mode&1)
     AGGR_ENABLE = true;
+  if (priv->phy_profile_id == OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE)
+    AGGR_ENABLE = false;
 
   // if (test_mode&2)
   //   TX_OFFSET_TUNING_ENABLE = false;
@@ -2348,8 +2473,12 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   priv->rssi_correction = rssi_correction_lookup_table(5220);//5220MHz. this will be set in real-time by _rf_set_channel()
   priv->last_auto_fpga_lbt_th = rssi_dbm_to_rssi_half_db(-78, priv->rssi_correction);//-78dBm. a magic value. just to avoid uninitialized
 
-  //priv->rf_bw = 20000000; // Signal quality issue! NOT use for now. 20MHz or 40MHz. 40MHz need ddc/duc. 20MHz works in bypass mode
-  priv->rf_bw = 40000000; // 20MHz or 40MHz. 40MHz need ddc/duc. 20MHz works in bypass mode
+  priv->rf_sample_rate_hz = OPENWIFI_PHY_RF_SAMPLE_RATE_HZ;
+  priv->baseband_sample_rate_hz = OPENWIFI_PHY_BASEBAND_SAMPLE_RATE_HZ;
+  priv->nominal_channel_bandwidth_hz = OPENWIFI_PHY_NOMINAL_BANDWIDTH_HZ;
+  priv->rf_filter_bandwidth_hz = OPENWIFI_PHY_RF_FILTER_BANDWIDTH_HZ;
+  priv->rf_center_freq_mhz = rf_center_freq_mhz;
+  priv->rf_bw = priv->rf_sample_rate_hz;
 
   priv->xpu_cfg = XPU_NORMAL;
 
@@ -2357,7 +2486,10 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   priv->openofdm_rx_cfg = OPENOFDM_RX_NORMAL;
 
   printk("%s openwifi_dev_probe: priv->rf_bw == %dHz. bool for 20000000 %d, 40000000 %d\n",sdr_compatible_str, priv->rf_bw, (priv->rf_bw==20000000) , (priv->rf_bw==40000000) );
-  if (priv->rf_bw == 20000000) { //DO NOT USE. Not used for long time.
+  if (priv->rf_bw == OPENWIFI_PHY_RF_SAMPLE_RATE_HZ) {
+    priv->rx_intf_cfg = RX_INTF_BW_20MHZ_AT_0MHZ_ANT0;
+    priv->tx_intf_cfg = TX_INTF_BW_20MHZ_AT_0MHZ_ANT0;
+  } else if (priv->rf_bw == 20000000) { //DO NOT USE. Not used for long time.
     priv->rx_intf_cfg = RX_INTF_BYPASS;
     priv->tx_intf_cfg = TX_INTF_BYPASS;
     //priv->rx_freq_offset_to_lo_MHz = 0;
@@ -2407,6 +2539,26 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   memset(priv->rf_reg_val,0,sizeof(priv->rf_reg_val));
 
   priv->rf_reg_val[RF_TX_REG_IDX_ATT] = init_tx_att;
+
+  err = openwifi_apply_phy_contract(priv);
+  if (err)
+    goto err_free_dev;
+
+  err = ad9361_set_trx_clock_chain_freq(priv->ad9361_phy,
+                                        priv->rf_sample_rate_hz);
+  if (err) {
+    pr_err("%s cannot set RF sample rate %uHz: %d\n",
+           sdr_compatible_str, priv->rf_sample_rate_hz, err);
+    goto err_free_dev;
+  }
+  err = ad9361_update_rf_bandwidth(priv->ad9361_phy,
+                                   priv->rf_filter_bandwidth_hz,
+                                   priv->rf_filter_bandwidth_hz);
+  if (err) {
+    pr_err("%s cannot set RF filter bandwidth %uHz: %d\n",
+           sdr_compatible_str, priv->rf_filter_bandwidth_hz, err);
+    goto err_free_dev;
+  }
 
   //let's by default turn radio on when probing
   err = openwifi_set_antenna(dev, priv->runtime_tx_ant_cfg, priv->runtime_rx_ant_cfg);
@@ -2462,9 +2614,9 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   priv->band_2GHz.band = NL80211_BAND_2GHZ;
   priv->band_2GHz.channels = priv->channels_2GHz;
   priv->band_2GHz.n_channels = ARRAY_SIZE(priv->channels_2GHz);
-  priv->band_2GHz.bitrates = priv->rates_2GHz;
-  priv->band_2GHz.n_bitrates = ARRAY_SIZE(priv->rates_2GHz);
-  priv->band_2GHz.ht_cap.ht_supported = true;
+  priv->band_2GHz.bitrates = &priv->rates_2GHz[4];
+  priv->band_2GHz.n_bitrates = 1;
+  priv->band_2GHz.ht_cap.ht_supported = false;
 
   if (test_mode&2)
     priv->band_2GHz.ht_cap.cap = IEEE80211_HT_CAP_SGI_20; //SGI -- short GI seems bring unnecessary stability issue
@@ -2483,7 +2635,7 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   priv->band_5GHz.n_channels = ARRAY_SIZE(priv->channels_5GHz);
   priv->band_5GHz.bitrates = priv->rates_5GHz;
   priv->band_5GHz.n_bitrates = ARRAY_SIZE(priv->rates_5GHz);
-  priv->band_5GHz.ht_cap.ht_supported = true;
+  priv->band_5GHz.ht_cap.ht_supported = false;
 
   if (test_mode&2)
     priv->band_5GHz.ht_cap.cap = IEEE80211_HT_CAP_SGI_20; //SGI -- short GI seems bring unnecessary stability issue
@@ -2495,7 +2647,7 @@ static int openwifi_dev_probe(struct platform_device *pdev)
   memset(&priv->band_5GHz.ht_cap.mcs, 0, sizeof(priv->band_5GHz.ht_cap.mcs));
   priv->band_5GHz.ht_cap.mcs.rx_mask[0] = 0xff;
   priv->band_5GHz.ht_cap.mcs.tx_params = IEEE80211_HT_MCS_TX_DEFINED;
-  dev->wiphy->bands[NL80211_BAND_5GHZ] = &(priv->band_5GHz);
+  dev->wiphy->bands[NL80211_BAND_5GHZ] = NULL;
 
   printk("%s openwifi_dev_probe: band_2GHz.n_channels %d n_bitrates %d band_5GHz.n_channels %d n_bitrates %d\n",sdr_compatible_str,
   priv->band_2GHz.n_channels,priv->band_2GHz.n_bitrates,priv->band_5GHz.n_channels,priv->band_5GHz.n_bitrates);
@@ -2778,5 +2930,3 @@ static struct platform_driver openwifi_dev_driver = {
 };
 
 module_platform_driver(openwifi_dev_driver);
-
-

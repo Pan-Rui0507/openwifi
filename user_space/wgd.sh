@@ -50,7 +50,21 @@ insert_check_module () {
   TARGET_DIR_input="$1"
   MODULE_input="$2"
   rmmod $MODULE_input
-  if [[ -n $3 ]]; then
+  if [ "$MODULE_input" = "sdr" ]; then
+    if [ "$CALIBRATION_STATUS" != "measured" ] || [ "$CALIBRATION_HW_GIT_REV" != "$EXPECTED_HW_GIT_REV" ]; then
+      echo "Calibration provenance mismatch in $PHY_CALIBRATION_FILE (status=$CALIBRATION_STATUS hw=$CALIBRATION_HW_GIT_REV expected=$EXPECTED_HW_GIT_REV)" >&2
+      exit 1
+    fi
+    if [ -z "$SEND_ACK_WAIT_100NS" ] || [ -z "$ACK_SIGNAL_TIMEOUT_100NS" ] || [ -z "$ACK_FCS_TIMEOUT_100NS" ]; then
+      echo "Missing required narrow2 calibration in $PHY_CALIBRATION_FILE" >&2
+      exit 1
+    fi
+    (set -x; insmod "$TARGET_DIR_input/$MODULE_input.ko" \
+      test_mode="${3:-0}" phy_profile=1 rf_center_freq_mhz="$RF_CENTER_FREQ_MHZ" \
+      send_ack_wait_100ns="$SEND_ACK_WAIT_100NS" \
+      ack_signal_timeout_100ns="$ACK_SIGNAL_TIMEOUT_100NS" \
+      ack_fcs_timeout_100ns="$ACK_FCS_TIMEOUT_100NS")
+  elif [[ -n $3 ]]; then
     (set -x; insmod $TARGET_DIR_input/$MODULE_input.ko test_mode=$3)
   else
     (set -x; insmod $TARGET_DIR_input/$MODULE_input.ko)
@@ -63,6 +77,19 @@ insert_check_module () {
 }
 
 print_usage
+
+PHY_CALIBRATION_FILE=${PHY_CALIBRATION_FILE:-/etc/openwifi/phy_calibration}
+EXPECTED_HW_GIT_REV=01197c24
+RF_CENTER_FREQ_MHZ=${RF_CENTER_FREQ_MHZ:-780}
+CALIBRATION_STATUS=${CALIBRATION_STATUS:-}
+CALIBRATION_HW_GIT_REV=${CALIBRATION_HW_GIT_REV:-}
+SEND_ACK_WAIT_100NS=${SEND_ACK_WAIT_100NS:-}
+ACK_SIGNAL_TIMEOUT_100NS=${ACK_SIGNAL_TIMEOUT_100NS:-}
+ACK_FCS_TIMEOUT_100NS=${ACK_FCS_TIMEOUT_100NS:-}
+if [ -r "$PHY_CALIBRATION_FILE" ]; then
+  # shellcheck disable=SC1090
+  . "$PHY_CALIBRATION_FILE"
+fi
 
 if [ -f /etc/openwrt_release ]; then
   IS_OPENWRT="true"

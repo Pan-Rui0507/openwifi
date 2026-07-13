@@ -226,6 +226,31 @@ static inline u32 XPU_REG_SLICE_COUNT_END_read(void){
 	return reg_read(XPU_REG_SLICE_COUNT_END_ADDR);
 }
 
+static inline void XPU_REG_PHY_PROFILE_CFG_write(u32 value){
+	reg_write(XPU_REG_PHY_PROFILE_CFG_ADDR, value);
+}
+static inline u32 XPU_REG_PHY_PROFILE_CFG_read(void){
+	return reg_read(XPU_REG_PHY_PROFILE_CFG_ADDR);
+}
+static inline void XPU_REG_PHY_TIMING0_write(u32 value){
+	reg_write(XPU_REG_PHY_TIMING0_ADDR, value);
+}
+static inline u32 XPU_REG_PHY_TIMING0_read(void){
+	return reg_read(XPU_REG_PHY_TIMING0_ADDR);
+}
+static inline void XPU_REG_PHY_TIMING1_write(u32 value){
+	reg_write(XPU_REG_PHY_TIMING1_ADDR, value);
+}
+static inline u32 XPU_REG_PHY_TIMING1_read(void){
+	return reg_read(XPU_REG_PHY_TIMING1_ADDR);
+}
+static inline u32 XPU_REG_PHY_ABI_read(void){
+	return reg_read(XPU_REG_PHY_ABI_ADDR);
+}
+static inline u32 XPU_REG_FPGA_GIT_REV_read(void){
+	return reg_read(XPU_REG_FPGA_GIT_REV_ADDR);
+}
+
 static inline void XPU_REG_BB_RF_DELAY_write(u32 value){
 	reg_write(XPU_REG_BB_RF_DELAY_ADDR, value);
 }
@@ -489,6 +514,15 @@ static int dev_probe(struct platform_device *pdev)
 	xpu_api->XPU_REG_SLICE_COUNT_TOTAL_read=XPU_REG_SLICE_COUNT_TOTAL_read;
 	xpu_api->XPU_REG_SLICE_COUNT_START_read=XPU_REG_SLICE_COUNT_START_read;
 	xpu_api->XPU_REG_SLICE_COUNT_END_read=XPU_REG_SLICE_COUNT_END_read;
+
+	xpu_api->XPU_REG_PHY_PROFILE_CFG_write=XPU_REG_PHY_PROFILE_CFG_write;
+	xpu_api->XPU_REG_PHY_PROFILE_CFG_read=XPU_REG_PHY_PROFILE_CFG_read;
+	xpu_api->XPU_REG_PHY_TIMING0_write=XPU_REG_PHY_TIMING0_write;
+	xpu_api->XPU_REG_PHY_TIMING0_read=XPU_REG_PHY_TIMING0_read;
+	xpu_api->XPU_REG_PHY_TIMING1_write=XPU_REG_PHY_TIMING1_write;
+	xpu_api->XPU_REG_PHY_TIMING1_read=XPU_REG_PHY_TIMING1_read;
+	xpu_api->XPU_REG_PHY_ABI_read=XPU_REG_PHY_ABI_read;
+	xpu_api->XPU_REG_FPGA_GIT_REV_read=XPU_REG_FPGA_GIT_REV_read;
 
 	xpu_api->XPU_REG_BB_RF_DELAY_write=XPU_REG_BB_RF_DELAY_write;
 

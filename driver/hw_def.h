@@ -336,6 +336,10 @@ const char *xpu_compatible_str = "sdr,xpu";
 #define XPU_REG_SLICE_COUNT_START_ADDR    (21*4)
 #define XPU_REG_SLICE_COUNT_END_ADDR      (22*4)
 
+#define XPU_REG_PHY_PROFILE_CFG_ADDR       (23*4)
+#define XPU_REG_PHY_TIMING0_ADDR           (24*4)
+#define XPU_REG_PHY_TIMING1_ADDR           (25*4)
+
 #define XPU_REG_CTS_TO_RTS_CONFIG_ADDR    (26*4)
 #define XPU_REG_FILTER_FLAG_ADDR          (27*4)
 #define XPU_REG_BSSID_FILTER_LOW_ADDR     (28*4)
@@ -345,6 +349,8 @@ const char *xpu_compatible_str = "sdr,xpu";
 
 #define XPU_REG_TSF_RUNTIME_VAL_LOW_ADDR  (58*4)
 #define XPU_REG_TSF_RUNTIME_VAL_HIGH_ADDR (59*4)
+
+#define XPU_REG_PHY_ABI_ADDR               (60*4)
 
 #define XPU_REG_MAC_ADDR_READ_BACK_ADDR   (62*4)
 #define XPU_REG_FPGA_GIT_REV_ADDR         (63*4)
@@ -446,6 +452,15 @@ struct xpu_driver_api {
   u32 (*XPU_REG_SLICE_COUNT_TOTAL1_read)(void);
   u32 (*XPU_REG_SLICE_COUNT_START1_read)(void);
   u32 (*XPU_REG_SLICE_COUNT_END1_read)(void);
+
+  void (*XPU_REG_PHY_PROFILE_CFG_write)(u32 value);
+  u32  (*XPU_REG_PHY_PROFILE_CFG_read)(void);
+  void (*XPU_REG_PHY_TIMING0_write)(u32 value);
+  u32  (*XPU_REG_PHY_TIMING0_read)(void);
+  void (*XPU_REG_PHY_TIMING1_write)(u32 value);
+  u32  (*XPU_REG_PHY_TIMING1_read)(void);
+  u32  (*XPU_REG_PHY_ABI_read)(void);
+  u32  (*XPU_REG_FPGA_GIT_REV_read)(void);
 
   void (*XPU_REG_BB_RF_DELAY_write)(u32 value);
   

@@ -114,6 +114,31 @@ enum sdrctl_reg_cat {
 #define RF_RX_REG_IDX_FREQ_MHZ     5
 // ------end of software and RF reg definition ------------
 
+#define OPENWIFI_PHY_PROFILE_LEGACY20          0
+#define OPENWIFI_PHY_PROFILE_NARROW2_S1G_LIKE  1
+#define OPENWIFI_PHY_ABI_NARROW2                0x53320103
+#define OPENWIFI_PHY_LOGICAL_FREQ_MHZ           2412
+#define OPENWIFI_PHY_ACTUAL_FREQ_MHZ            780
+#define OPENWIFI_PHY_RF_SAMPLE_RATE_HZ           4000000
+#define OPENWIFI_PHY_BASEBAND_SAMPLE_RATE_HZ     2000000
+#define OPENWIFI_PHY_NOMINAL_BANDWIDTH_HZ        2000000
+#define OPENWIFI_PHY_RF_FILTER_BANDWIDTH_HZ      2500000
+#define OPENWIFI_PHY_PREAMBLE_SIG_US             200
+#define OPENWIFI_PHY_OFDM_SYMBOL_US              40
+#define OPENWIFI_PHY_SIFS_US                     160
+#define OPENWIFI_PHY_SLOT_US                     52
+#define OPENWIFI_PHY_DIFS_US                     264
+#define OPENWIFI_PHY_ACK_PPDU_US                 440
+#define OPENWIFI_PHY_EIFS_US                     864
+#define OPENWIFI_PHY_ACK_DURATION_US             600
+
+#define OPENWIFI_PHY_TIMING0 \
+  ((OPENWIFI_PHY_SLOT_US << 24) | (OPENWIFI_PHY_SIFS_US << 16) | \
+   (OPENWIFI_PHY_OFDM_SYMBOL_US << 8) | OPENWIFI_PHY_PREAMBLE_SIG_US)
+#define OPENWIFI_PHY_TIMING1 \
+  (BIT(31) | (OPENWIFI_PHY_ACK_PPDU_US << 20) | \
+   (OPENWIFI_PHY_EIFS_US << 10) | OPENWIFI_PHY_DIFS_US)
+
 // -------------dmesg printk control flag------------------
 #define DMESG_LOG_ERROR (1<<0)
 #define DMESG_LOG_UNICAST (1<<1)
@@ -458,7 +483,12 @@ struct openwifi_priv {
 
   int rx_freq_offset_to_lo_MHz;
   int tx_freq_offset_to_lo_MHz;
-  u32 rf_bw;
+  u32 rf_bw; // compatibility alias for rf_sample_rate_hz
+  u32 rf_sample_rate_hz;
+  u32 baseband_sample_rate_hz;
+  u32 nominal_channel_bandwidth_hz;
+  u32 rf_filter_bandwidth_hz;
+  u32 rf_center_freq_mhz;
   u32 actual_rx_lo;
   u32 actual_tx_lo;
   u32 last_tx_quad_cal_lo;
@@ -507,6 +537,12 @@ struct openwifi_priv {
 
   bool use_short_slot;
   u8   band;
+  u8   phy_profile_id;
+  u32  phy_abi;
+  u32  hardware_git_rev;
+  u32  send_ack_wait_100ns;
+  u32  ack_signal_timeout_100ns;
+  u32  ack_fcs_timeout_100ns;
 
   u32 ampdu_reference;
 

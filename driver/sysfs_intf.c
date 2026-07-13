@@ -167,9 +167,62 @@ static ssize_t tx_intf_iq_ctl_store(struct device *input_dev, struct device_attr
 	return ret ? ret : len;
 }
 
+static ssize_t phy_runtime_status_show(struct device *input_dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct platform_device *pdev = to_platform_device(input_dev);
+	struct ieee80211_hw *dev = platform_get_drvdata(pdev);
+	struct openwifi_priv *priv = dev->priv;
+
+	return sysfs_emit(buf,
+		"profile=narrow2_s1g_like\n"
+		"profile_id=%u\n"
+		"compatibility=s1g_like_not_ieee80211ah\n"
+		"validation_status=diagnostic_only\n"
+		"phy_abi=0x%08x\n"
+		"hardware_git_rev=0x%08x\n"
+		"expected_hardware_git_rev=0x%08x\n"
+		"driver_git_rev=0x%08x\n"
+		"logical_center_freq_mhz=%u\n"
+		"configured_rf_center_freq_mhz=%u\n"
+		"actual_rx_center_freq_mhz=%u\n"
+		"actual_tx_center_freq_mhz=%u\n"
+		"rf_sample_rate_hz=%u\n"
+		"baseband_sample_rate_hz=%u\n"
+		"nominal_channel_bandwidth_hz=%u\n"
+		"rf_filter_bandwidth_hz=%u\n"
+		"logical_rate_mbps=6\n"
+		"estimated_actual_rate_mbps=0.6\n"
+		"preamble_signal_us=%u\n"
+		"ofdm_symbol_us=%u\n"
+		"sifs_us=%u\n"
+		"slot_us=%u\n"
+		"difs_us=%u\n"
+		"ack_ppdu_us=%u\n"
+		"eifs_us=%u\n"
+		"ack_duration_us=%u\n"
+		"send_ack_wait_100ns=%u\n"
+		"ack_signal_timeout_100ns=%u\n"
+		"ack_fcs_timeout_100ns=%u\n"
+		"calibration_ok=1\n",
+		priv->phy_profile_id, priv->phy_abi, priv->hardware_git_rev,
+		OPENWIFI_EXPECTED_HW_GIT_REV, GIT_REV,
+		OPENWIFI_PHY_LOGICAL_FREQ_MHZ, priv->rf_center_freq_mhz,
+		priv->actual_rx_lo, priv->actual_tx_lo,
+		priv->rf_sample_rate_hz, priv->baseband_sample_rate_hz,
+		priv->nominal_channel_bandwidth_hz, priv->rf_filter_bandwidth_hz,
+		OPENWIFI_PHY_PREAMBLE_SIG_US, OPENWIFI_PHY_OFDM_SYMBOL_US,
+		OPENWIFI_PHY_SIFS_US, OPENWIFI_PHY_SLOT_US, OPENWIFI_PHY_DIFS_US,
+		OPENWIFI_PHY_ACK_PPDU_US, OPENWIFI_PHY_EIFS_US,
+		OPENWIFI_PHY_ACK_DURATION_US, priv->send_ack_wait_100ns,
+		priv->ack_signal_timeout_100ns, priv->ack_fcs_timeout_100ns);
+}
+
 static DEVICE_ATTR(tx_intf_iq_ctl, S_IRUGO | S_IWUSR, tx_intf_iq_ctl_show, tx_intf_iq_ctl_store);
+static DEVICE_ATTR_RO(phy_runtime_status);
 static struct attribute *tx_intf_attributes[] = {
 	&dev_attr_tx_intf_iq_ctl.attr,
+	&dev_attr_phy_runtime_status.attr,
 	NULL,
 };
 static const struct attribute_group tx_intf_attribute_group = {
